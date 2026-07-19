@@ -6,3 +6,5 @@ matplotlib
 seaborn
 lightgbm
 pulp
+xgboost
+ipywidgets

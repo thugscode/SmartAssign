@@ -261,6 +261,19 @@ def build_model(model_name: str, random_state: int = DEFAULT_RANDOM_STATE):
             max_depth=None,
             min_samples_leaf=2,
         )
+    if model_name == "xgboost":
+        xgb_module = importlib.import_module("xgboost")
+        return xgb_module.XGBRegressor(
+            n_estimators=400,
+            learning_rate=0.05,
+            max_depth=6,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            reg_lambda=1.0,
+            random_state=random_state,
+            n_jobs=-1,
+            objective="reg:squarederror",
+        )
     if model_name == "lightgbm":
         lgbm_module = importlib.import_module("lightgbm")
         return lgbm_module.LGBMRegressor(
@@ -380,6 +393,51 @@ def build_score_matrix(
     return score_matrix
 
 
+def predict_with_uncertainty(bundle: ModelBundle, feature_frame: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """Return the mean prediction and tree-level standard deviation for a fitted RandomForest pipeline."""
+
+    preprocessor = bundle.pipeline.named_steps["preprocessor"]
+    regressor = bundle.pipeline.named_steps["regressor"]
+    if not hasattr(regressor, "estimators_"):
+        raise AttributeError("Uncertainty estimates require a tree ensemble with estimators_.")
+
+    transformed = preprocessor.transform(feature_frame)
+    tree_predictions = np.vstack([tree.predict(transformed) for tree in regressor.estimators_])
+    return tree_predictions.mean(axis=0), tree_predictions.std(axis=0, ddof=0)
+
+
+def build_score_and_uncertainty_matrices(
+    bundle: ModelBundle,
+    sample_df: pd.DataFrame,
+    department_profiles: pd.DataFrame,
+    profile_columns: Sequence[str],
+    department_column: str = "Department",
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    departments = department_profiles[department_column].tolist()
+    score_matrix = pd.DataFrame(index=sample_df.index, columns=departments, dtype=float)
+    uncertainty_matrix = pd.DataFrame(index=sample_df.index, columns=departments, dtype=float)
+
+    for department in departments:
+        counterfactual_rows = []
+        for _, row in sample_df.iterrows():
+            counterfactual_rows.append(
+                build_counterfactual_frame(
+                    employee_row=row,
+                    department=department,
+                    department_profiles=department_profiles,
+                    profile_columns=profile_columns,
+                    feature_columns=bundle.feature_columns,
+                    department_column=department_column,
+                )
+            )
+        counterfactual_frame = pd.concat(counterfactual_rows, ignore_index=True)
+        mean_predictions, std_predictions = predict_with_uncertainty(bundle, counterfactual_frame)
+        score_matrix.loc[:, department] = mean_predictions
+        uncertainty_matrix.loc[:, department] = std_predictions
+
+    return score_matrix, uncertainty_matrix
+
+
 def compute_department_capacities(
     full_df: pd.DataFrame,
     sample_size: int,
@@ -457,6 +515,72 @@ def solve_assignment_pulp(
                         "employee_index": employee,
                         "department": department,
                         "predicted_score": float(score_matrix.loc[employee, department]),
+                    }
+                )
+                break
+
+    assignment = pd.DataFrame(records)
+    total_score = float(assignment["predicted_score"].sum())
+    return assignment, total_score
+
+
+def solve_assignment_with_overrides(
+    score_matrix: pd.DataFrame,
+    employees_ids: Sequence[object],
+    projects_ids: Sequence[object],
+    capacity: Dict[object, int] | int | None = None,
+    locked_pairs: Sequence[Tuple[object, object]] | None = None,
+    forbidden_pairs: Sequence[Tuple[object, object]] | None = None,
+    time_limit_seconds: int = 30,
+) -> Tuple[pd.DataFrame, float]:
+    import pulp
+
+    locked_pairs = list(locked_pairs or [])
+    forbidden_pairs = list(forbidden_pairs or [])
+
+    employees = list(employees_ids)
+    projects = list(projects_ids)
+    problem = pulp.LpProblem("employee_assignment_with_overrides", pulp.LpMaximize)
+    variables = pulp.LpVariable.dicts("assign", (employees, projects), lowBound=0, upBound=1, cat="Binary")
+
+    problem += pulp.lpSum(float(score_matrix.loc[employee, project]) * variables[employee][project] for employee in employees for project in projects)
+
+    for employee in employees:
+        problem += pulp.lpSum(variables[employee][project] for project in projects) == 1
+
+    if capacity is not None:
+        if isinstance(capacity, int):
+            capacity_map = {project: int(capacity) for project in projects}
+        else:
+            capacity_map = {project: int(capacity.get(project, len(employees))) for project in projects}
+        for project in projects:
+            problem += pulp.lpSum(variables[employee][project] for employee in employees) <= capacity_map[project]
+
+    for employee, project in locked_pairs:
+        if employee not in employees or project not in projects:
+            raise ValueError(f"Locked pair {(employee, project)} is outside the score matrix.")
+        problem += variables[employee][project] == 1
+
+    for employee, project in forbidden_pairs:
+        if employee not in employees or project not in projects:
+            raise ValueError(f"Forbidden pair {(employee, project)} is outside the score matrix.")
+        problem += variables[employee][project] == 0
+
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit_seconds)
+    status = problem.solve(solver)
+
+    if pulp.LpStatus[status] not in {"Optimal", "Feasible"}:
+        raise RuntimeError(f"PuLP solver did not find a feasible assignment. Status={pulp.LpStatus[status]}")
+
+    records = []
+    for employee in employees:
+        for project in projects:
+            if pulp.value(variables[employee][project]) == 1:
+                records.append(
+                    {
+                        "employee_index": employee,
+                        "department": project,
+                        "predicted_score": float(score_matrix.loc[employee, project]),
                     }
                 )
                 break

@@ -20,9 +20,10 @@ The work is split into a few notebook steps and one script:
 
 1. `notebooks/01_eda.ipynb` looks at the raw data, checks missing values, and shows the main patterns.
 2. `notebooks/02_data_prep.ipynb` cleans the data, removes `Monthly_Salary` because it leaks information, and creates two feature sets: `full` and `conservative`.
-3. `notebooks/03_model_training.ipynb` trains a `RandomForestRegressor` and a `LightGBMRegressor`, then saves the best model.
-4. `src/04_optimize_assignment.py` builds department profiles, predicts scores for employee-department pairs, and solves the assignment problem with PuLP.
-5. `notebooks/05_evaluation_comparison.ipynb` compares the optimized assignment with random, greedy, and current-assignment baselines.
+3. `notebooks/03_model_training.ipynb` trains a `RandomForestRegressor` and a `LightGBMRegressor`, then keeps RandomForest as the final model because the review step needs uncertainty estimates from individual trees.
+4. `src/04_optimize_assignment.py` builds department profiles, predicts scores and uncertainty for employee-department pairs, and solves the assignment problem with PuLP.
+5. `notebooks/05_human_review.ipynb` shows the uncertain pairs, lets a person approve, reject, or force a choice, and writes the review log.
+6. `notebooks/06_evaluation_comparison.ipynb` compares the final human-reviewed assignment with random, greedy, current-assignment, and pre-review ML+Optimize baselines.
 
 ## Math Behind The Project
 
@@ -174,41 +175,13 @@ $$
 
 where $a(i)$ is the assigned department for employee $i$.
 
-## What I Found
-
-`Monthly_Salary` is strongly tied to `Performance_Score`, so I removed it from the model to avoid leakage.
-
-The remaining features do not predict performance very strongly. The best result in the saved run is LightGBM on the conservative feature set, but the test `R^2` is still close to zero. So the model is useful, but it is not especially strong on its own.
-
-Even so, the optimization step still helps. On the saved 50-employee sample, the PuLP assignment gives a slightly better total predicted score than the current assignment baseline.
-
-## Results
-
-### Model Comparison
-
-| feature_set | model | MAE | RMSE | R² |
-| --- | --- | ---: | ---: | ---: |
-| conservative | lightgbm | 1.2151 | 1.4174 | -0.0062 |
-| conservative | random_forest | 1.2263 | 1.4244 | -0.0161 |
-| full | lightgbm | 1.2156 | 1.4176 | -0.0065 |
-| full | random_forest | 1.2227 | 1.4211 | -0.0115 |
-
-### Assignment Comparison
-
-| method | total_predicted_score | mean_predicted_score |
-| --- | ---: | ---: |
-| optimal_pulp | 150.4663 | 3.0093 |
-| current_assignment | 149.5808 | 2.9916 |
-| random | 149.1276 | 2.9826 |
-| greedy | 148.9708 | 2.9794 |
-
-## Important Notes
+## What To Expect
 
 `Monthly_Salary` is treated as leakage and is not used in the model.
 
 The department profiles used for the counterfactual assignment are an assumption, not real observed truth. Each department is represented by median values from the employees already in that department, which means the setup has some selection bias.
 
-The “true score” shown in the assignment comparison is only a historical proxy based on the sampled employees’ actual `Performance_Score`. It stays the same across methods because the employees themselves do not change.
+The final model is a RandomForest so the project can measure uncertainty from tree-to-tree spread. The review step focuses only on the most uncertain employee-department pairs.
 
 ## Output Files
 
@@ -222,8 +195,14 @@ It also saves result files here:
 * `results/model_metrics.csv`
 * `results/best_model_metadata.json`
 * `results/best_model_feature_importances.csv`
-* `results/assignment_comparison.csv`
+* `results/score_matrix_sample.csv`
+* `results/uncertainty_matrix_sample.csv`
+* `results/proposed_assignment.csv`
+* `results/review_queue.csv`
+* `results/human_review_log.csv`
+* `results/human_review_summary.csv`
 * `results/optimal_assignment.csv`
+* `results/assignment_comparison.csv`
 
 The trained model bundle is saved at `models/best_model_bundle.joblib`.
 
@@ -241,7 +220,8 @@ pip install -r requirements.txt
 * [notebooks/02_data_prep.ipynb](notebooks/02_data_prep.ipynb)
 * [notebooks/03_model_training.ipynb](notebooks/03_model_training.ipynb)
 * [src/04_optimize_assignment.py](src/04_optimize_assignment.py)
-* [notebooks/05_evaluation_comparison.ipynb](notebooks/05_evaluation_comparison.ipynb)
+* [notebooks/05_human_review.ipynb](notebooks/05_human_review.ipynb)
+* [notebooks/06_evaluation_comparison.ipynb](notebooks/06_evaluation_comparison.ipynb)
 
 ## Run Order
 
@@ -249,4 +229,5 @@ pip install -r requirements.txt
 2. Run `02_data_prep.ipynb`.
 3. Run `03_model_training.ipynb`.
 4. Run `python src/04_optimize_assignment.py --sample-size 50`.
-5. Run `05_evaluation_comparison.ipynb`.
+5. Run `05_human_review.ipynb` and make the review decisions.
+6. Run `06_evaluation_comparison.ipynb`.

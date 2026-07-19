@@ -19,6 +19,7 @@ from smartassign_pipeline import (  # noqa: E402
     PROCESSED_DATA_DIR,
     RESULTS_DIR,
     ModelBundle,
+    build_score_and_uncertainty_matrices,
     build_score_matrix,
     compare_assignment_methods,
     compute_department_capacities,
@@ -28,6 +29,7 @@ from smartassign_pipeline import (  # noqa: E402
     load_raw_data,
     save_csv,
     save_json,
+    solve_assignment_with_overrides,
     split_train_test,
 )
 
@@ -36,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sample-size", type=int, default=50, help="Number of employees to include in the optimization sample.")
     parser.add_argument("--model-path", type=Path, default=MODELS_DIR / "best_model_bundle.joblib", help="Path to the saved model bundle.")
-    parser.add_argument("--output-path", type=Path, default=RESULTS_DIR / "optimal_assignment.csv", help="Where to save the optimal assignment.")
+    parser.add_argument("--output-path", type=Path, default=RESULTS_DIR / "proposed_assignment.csv", help="Where to save the pre-review assignment.")
     return parser.parse_args()
 
 
@@ -54,14 +56,25 @@ def main() -> None:
     department_profiles = compute_department_profiles(df, profile_columns)
     department_profiles.to_csv(PROCESSED_DATA_DIR / f"department_profiles_{bundle.feature_set_name}.csv", index=False)
 
-    score_matrix_df = build_score_matrix(bundle, test_frame, department_profiles, profile_columns)
+    score_matrix_df, uncertainty_matrix_df = build_score_and_uncertainty_matrices(
+        bundle,
+        test_frame,
+        department_profiles,
+        profile_columns,
+    )
 
     capacities = compute_department_capacities(df, len(test_frame))
     comparison, methods = compare_assignment_methods(test_frame, score_matrix_df, capacities)
-    optimal_assignment = methods["optimal_pulp"]
+    proposed_assignment, proposed_total = solve_assignment_with_overrides(
+        score_matrix=score_matrix_df,
+        employees_ids=test_frame.index,
+        projects_ids=score_matrix_df.columns,
+        capacity=capacities,
+    )
 
     save_csv(score_matrix_df.reset_index().rename(columns={"index": "employee_index"}), RESULTS_DIR / "score_matrix_sample.csv")
-    save_csv(optimal_assignment, args.output_path)
+    save_csv(uncertainty_matrix_df.reset_index().rename(columns={"index": "employee_index"}), RESULTS_DIR / "uncertainty_matrix_sample.csv")
+    save_csv(proposed_assignment, args.output_path)
     save_csv(comparison, RESULTS_DIR / "assignment_comparison.csv")
     save_json(
         {
@@ -70,11 +83,12 @@ def main() -> None:
             "model_path": str(args.model_path),
             "department_capacities": capacities,
             "profile_columns": profile_columns,
+            "proposed_total_predicted_score": proposed_total,
         },
         RESULTS_DIR / "optimization_metadata.json",
     )
 
-    print("Optimal assignment saved to:", args.output_path)
+    print("Proposed assignment saved to:", args.output_path)
     print("Comparison table saved to:", RESULTS_DIR / "assignment_comparison.csv")
     print("Objective score summary:\n", comparison)
 
