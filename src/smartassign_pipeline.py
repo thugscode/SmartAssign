@@ -14,14 +14,13 @@ import importlib
 import joblib
 import numpy as np
 import pandas as pd
-from ortools.sat.python import cp_model
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.base import BaseEstimator, TransformerMixin
 
 
@@ -267,9 +266,11 @@ def build_model(model_name: str, random_state: int = DEFAULT_RANDOM_STATE):
         return lgbm_module.LGBMRegressor(
             n_estimators=400,
             learning_rate=0.05,
-            random_state=random_state,
+            max_depth=6,
             subsample=0.9,
             colsample_bytree=0.9,
+            reg_lambda=1.0,
+            random_state=random_state,
             n_jobs=-1,
         )
     raise ValueError(f"Unsupported model_name: {model_name}")
@@ -416,48 +417,41 @@ def compute_department_capacities(
     return {department: int(capacities.loc[department]) for department in departments}
 
 
-def solve_assignment_ortools(
+def solve_assignment_pulp(
     score_matrix: pd.DataFrame,
     capacities: Dict[str, int],
     time_limit_seconds: int = 30,
 ) -> Tuple[pd.DataFrame, float]:
-    model = cp_model.CpModel()
+    import pulp
+
     employees = list(score_matrix.index)
     departments = list(score_matrix.columns)
-    scale = 1000
+    problem = pulp.LpProblem("employee_assignment", pulp.LpMaximize)
 
-    variables = {}
-    for employee in employees:
-        for department in departments:
-            variables[(employee, department)] = model.NewBoolVar(f"x_{employee}_{department}")
+    variables = pulp.LpVariable.dicts("assign", (employees, departments), lowBound=0, upBound=1, cat="Binary")
+
+    problem += pulp.lpSum(
+        float(score_matrix.loc[employee, department]) * variables[employee][department]
+        for employee in employees
+        for department in departments
+    )
 
     for employee in employees:
-        model.Add(sum(variables[(employee, department)] for department in departments) == 1)
+        problem += pulp.lpSum(variables[employee][department] for department in departments) == 1
 
     for department in departments:
-        model.Add(
-            sum(variables[(employee, department)] for employee in employees) <= int(capacities.get(department, 0))
-        )
+        problem += pulp.lpSum(variables[employee][department] for employee in employees) <= int(capacities.get(department, 0))
 
-    objective_terms = []
-    for employee in employees:
-        for department in departments:
-            weight = int(round(float(score_matrix.loc[employee, department]) * scale))
-            objective_terms.append(weight * variables[(employee, department)])
-    model.Maximize(sum(objective_terms))
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit_seconds)
+    status = problem.solve(solver)
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = float(time_limit_seconds)
-    solver.parameters.num_search_workers = 8
-    status = solver.Solve(model)
-
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        raise RuntimeError(f"OR-Tools did not find a feasible assignment. Status={status}")
+    if pulp.LpStatus[status] not in {"Optimal", "Feasible"}:
+        raise RuntimeError(f"PuLP solver did not find a feasible assignment. Status={pulp.LpStatus[status]}")
 
     records = []
     for employee in employees:
         for department in departments:
-            if solver.Value(variables[(employee, department)]) == 1:
+            if pulp.value(variables[employee][department]) == 1:
                 records.append(
                     {
                         "employee_index": employee,
@@ -554,14 +548,14 @@ def compare_assignment_methods(
     random_state: int = DEFAULT_RANDOM_STATE,
 ) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
     methods = {
-        "optimal_ortools": None,
+        "optimal_pulp": None,
         "random": None,
         "greedy": None,
         "current_assignment": None,
     }
 
-    optimal_assignment, optimal_total = solve_assignment_ortools(score_matrix, capacities)
-    methods["optimal_ortools"] = optimal_assignment
+    optimal_assignment, optimal_total = solve_assignment_pulp(score_matrix, capacities)
+    methods["optimal_pulp"] = optimal_assignment
     methods["random"] = random_assignment(score_matrix, capacities, random_state=random_state)
     methods["greedy"] = greedy_assignment(sample_df, score_matrix, capacities, department_column=department_column, target_column=target_column)
     methods["current_assignment"] = current_assignment(sample_df, score_matrix, department_column=department_column)

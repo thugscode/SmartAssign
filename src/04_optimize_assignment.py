@@ -1,4 +1,4 @@
-"""Optimize employee-to-department assignments with OR-Tools."""
+"""Optimize employee-to-department assignments with PuLP."""
 
 from __future__ import annotations
 
@@ -15,10 +15,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from smartassign_pipeline import (  # noqa: E402
-    build_score_matrix,
     MODELS_DIR,
     PROCESSED_DATA_DIR,
     RESULTS_DIR,
+    ModelBundle,
+    build_score_matrix,
     compare_assignment_methods,
     compute_department_capacities,
     compute_department_profiles,
@@ -29,7 +30,6 @@ from smartassign_pipeline import (  # noqa: E402
     save_json,
     split_train_test,
 )
-from smartassign_pipeline import ModelBundle  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,7 +58,7 @@ def main() -> None:
 
     capacities = compute_department_capacities(df, len(test_frame))
     comparison, methods = compare_assignment_methods(test_frame, score_matrix_df, capacities)
-    optimal_assignment = methods["optimal_ortools"]
+    optimal_assignment = methods["optimal_pulp"]
 
     save_csv(score_matrix_df.reset_index().rename(columns={"index": "employee_index"}), RESULTS_DIR / "score_matrix_sample.csv")
     save_csv(optimal_assignment, args.output_path)
