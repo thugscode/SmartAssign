@@ -1,26 +1,36 @@
 # SmartAssign
 
-Predict-then-optimize employee-to-department assignment pipeline for the Kaggle dataset *Employee Performance and Productivity Data*.
+This project takes employee data, predicts performance, and then uses those predictions to assign people to departments in a smarter way.
 
-## Problem Statement
+## What This Project Does
 
-The project predicts employee `Performance_Score` from available employee attributes, then uses those predictions inside an assignment model that maps employees to departments treated as project slots. The goal is to compare the ML-driven assignment against simpler baselines.
+The idea is simple:
 
-## Methodology
+1. Look at the employee dataset.
+2. Clean the data and remove anything that would give the model unfair help.
+3. Train a model to predict `Performance_Score`.
+4. Use those predictions to assign employees to departments.
+5. Compare that assignment against simpler baselines.
 
-The workflow is split into five notebook steps plus one optimization script:
+Departments are treated like project slots here, so the model is basically asking: “Which employee should go to which department if we want the best overall predicted performance?”
 
-1. `notebooks/01_eda.ipynb` explores the data, checks missingness, visualizes the target, and reports correlations.
-2. `notebooks/02_data_prep.ipynb` documents cleaning decisions, removes `Monthly_Salary` as a leakage feature, and builds both `full` and `conservative` feature sets.
-3. `notebooks/03_model_training.ipynb` trains `RandomForestRegressor` and `LightGBMRegressor` models on both feature sets and saves the best model bundle.
-4. `src/04_optimize_assignment.py` builds department counterfactual profiles, scores every employee-department pair, and solves the assignment problem with PuLP.
-5. `notebooks/05_evaluation_comparison.ipynb` compares the optimal assignment against random, greedy, and current-assignment baselines.
+## How The Project Is Built
 
-## Key Findings
+The work is split into a few notebook steps and one script:
 
-The dataset shows a strong leakage relationship between `Monthly_Salary` and `Performance_Score`, so salary is excluded from modeling. The target is only weakly predictable from the remaining features: the best model in the generated results is `LightGBM` on the `conservative` feature set, but its test `R^2` is still near zero. That means the optimization layer can still re-rank candidates, but the gain is limited by weak predictive signal.
+1. `notebooks/01_eda.ipynb` looks at the raw data, checks missing values, and shows the main patterns.
+2. `notebooks/02_data_prep.ipynb` cleans the data, removes `Monthly_Salary` because it leaks information, and creates two feature sets: `full` and `conservative`.
+3. `notebooks/03_model_training.ipynb` trains a `RandomForestRegressor` and a `LightGBMRegressor`, then saves the best model.
+4. `src/04_optimize_assignment.py` builds department profiles, predicts scores for employee-department pairs, and solves the assignment problem with PuLP.
+5. `notebooks/05_evaluation_comparison.ipynb` compares the optimized assignment with random, greedy, and current-assignment baselines.
 
-The assignment step does improve the objective. On the saved 50-employee sample, the PuLP solution beats the current-assignment baseline by about 0.89 predicted-score points.
+## What I Found
+
+`Monthly_Salary` is strongly tied to `Performance_Score`, so I removed it from the model to avoid leakage.
+
+The remaining features do not predict performance very strongly. The best result in the saved run is LightGBM on the conservative feature set, but the test `R^2` is still close to zero. So the model is useful, but it is not especially strong on its own.
+
+Even so, the optimization step still helps. On the saved 50-employee sample, the PuLP assignment gives a slightly better total predicted score than the current assignment baseline.
 
 ## Results
 
@@ -42,29 +52,40 @@ The assignment step does improve the objective. On the saved 50-employee sample,
 | random | 149.1276 | 2.9826 |
 | greedy | 148.9708 | 2.9794 |
 
-## Caveats
+## Important Notes
 
-`Monthly_Salary` is treated as leakage and removed from all model features.
+`Monthly_Salary` is treated as leakage and is not used in the model.
 
-The department-profile counterfactuals are an assumption, not observed ground truth. Each department is represented by median department-level feature values, which introduces selection bias because employees were not randomly assigned to departments in the original data.
+The department profiles used for the counterfactual assignment are an assumption, not real observed truth. Each department is represented by median values from the employees already in that department, which means the setup has some selection bias.
 
-The “true score” proxy in the assignment comparison is historical `Performance_Score` for the sampled employees, so it does not change across assignment methods. It is included only as a reference point.
+The “true score” shown in the assignment comparison is only a historical proxy based on the sampled employees’ actual `Performance_Score`. It stays the same across methods because the employees themselves do not change.
 
-## Outputs
+## Output Files
 
-Generated artifacts are saved in:
+The project saves figures and tables in these folders:
 
 * `outputs/figures/`
 * `outputs/tables/`
+
+It also saves result files here:
+
 * `results/model_metrics.csv`
 * `results/best_model_metadata.json`
 * `results/best_model_feature_importances.csv`
 * `results/assignment_comparison.csv`
 * `results/optimal_assignment.csv`
 
-The best model bundle is stored at `models/best_model_bundle.joblib`.
+The trained model bundle is saved at `models/best_model_bundle.joblib`.
 
-## Project Files
+## Install
+
+Install the needed packages with:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Files To Run
 
 * [notebooks/01_eda.ipynb](notebooks/01_eda.ipynb)
 * [notebooks/02_data_prep.ipynb](notebooks/02_data_prep.ipynb)
@@ -74,7 +95,7 @@ The best model bundle is stored at `models/best_model_bundle.joblib`.
 
 ## Run Order
 
-1. Open and run `01_eda.ipynb`.
+1. Run `01_eda.ipynb`.
 2. Run `02_data_prep.ipynb`.
 3. Run `03_model_training.ipynb`.
 4. Run `python src/04_optimize_assignment.py --sample-size 50`.
